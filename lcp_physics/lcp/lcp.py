@@ -44,7 +44,9 @@ class LCPFunction(Function):
 
         d = lams / slacks
 
-        pdipm.factor_kkt(S_LU, R, d)
+        # The backward solve is an adjoint system; generalized F may be
+        # non-symmetric, so its cached Schur base must be transposed.
+        pdipm.factor_kkt(S_LU, R.transpose(1, 2), d)
         dx, _, dlam, dnu = pdipm.solve_kkt(
             Q_LU, d, G, A, S_LU,
             dl_dzhat, G.new_zeros(batch_size, nineq),

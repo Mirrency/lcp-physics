@@ -48,6 +48,21 @@ def _symmetrize(Q):
     return 0.5 * (Q + Q.transpose(1, 2))
 
 
+def _nonsymmetric_active_problem():
+    Q = torch.eye(2, dtype=torch.double).unsqueeze(0).requires_grad_()
+    p = torch.tensor([[-1.7, -3.1]], dtype=torch.double, requires_grad=True)
+    G = torch.eye(2, dtype=torch.double).unsqueeze(0).requires_grad_()
+    h = torch.tensor([[0.53, 1.69]], dtype=torch.double, requires_grad=True)
+    A = torch.empty(1, 0, 2, dtype=torch.double)
+    b = torch.empty(1, 0, dtype=torch.double)
+    F = torch.tensor(
+        [[[0.2, 0.3], [0.05, 0.25]]],
+        dtype=torch.double,
+        requires_grad=True,
+    )
+    return Q, p, G, h, A, b, F
+
+
 def test_one_variable_convex_lcp_has_finite_expected_solution():
     problem = _one_variable_problem()
 
@@ -156,6 +171,56 @@ def test_active_inequality_gradcheck_covers_G_h_and_F():
     )
 
 
+def test_nonsymmetric_F_active_p_gradient_matches_transposed_kkt_adjoint():
+    Q, p, G, h, A, b, F = _nonsymmetric_active_problem()
+    solve = lcp_function(max_iter=30)
+
+    solution = solve(Q, p, G, h, A, b, F)
+    (actual_p_gradient,) = torch.autograd.grad(solution.sum(), p)
+
+    with torch.no_grad():
+        active_kkt = torch.cat(
+            (
+                torch.cat((Q, G.transpose(1, 2)), dim=2),
+                torch.cat((G, -F), dim=2),
+            ),
+            dim=1,
+        )
+        adjoint_rhs = torch.cat(
+            (torch.ones_like(p), torch.zeros_like(h)), dim=1)
+        adjoint = torch.linalg.solve(
+            active_kkt.transpose(1, 2), adjoint_rhs.unsqueeze(2)).squeeze(2)
+        expected_p_gradient = -adjoint[:, :p.size(1)]
+
+    torch.testing.assert_close(
+        solution,
+        solution.new_tensor([[1.0, 2.0]]),
+        atol=1e-8,
+        rtol=1e-8,
+    )
+    torch.testing.assert_close(
+        actual_p_gradient,
+        expected_p_gradient,
+        atol=1e-8,
+        rtol=1e-8,
+    )
+
+
+def test_nonsymmetric_F_active_problem_passes_all_input_gradcheck():
+    Q, p, G, h, A, b, F = _nonsymmetric_active_problem()
+    solve = lcp_function(max_iter=30)
+
+    assert torch.autograd.gradcheck(
+        lambda candidate_Q, candidate_p, candidate_G, candidate_h, candidate_F:
+            solve(_symmetrize(candidate_Q), candidate_p, candidate_G,
+                  candidate_h, A, b, candidate_F),
+        (Q, p, G, h, F),
+        eps=1e-6,
+        atol=1e-5,
+        rtol=1e-3,
+    )
+
+
 def test_lcp_backward_supports_positive_equality_count():
     Q = torch.tensor([[[1.0]]], dtype=torch.double)
     p = torch.tensor([[-1.0]], dtype=torch.double)
@@ -231,3 +296,27 @@ def test_pdipm_engine_solves_world_contact_scene():
     assert world.contacts
     assert new_velocity.shape == world.get_v().shape
     assert torch.isfinite(new_velocity).all()
+
+
+def test_pdipm_engine_frictional_world_gradient_is_finite():
+    learnable_velocity = torch.tensor(
+        [0.0, 1.0, 0.5], dtype=torch.double, requires_grad=True)
+    world = World(
+        [
+            Circle(
+                [0.0, 0.0], 1.0, vel=learnable_velocity, fric_coeff=0.8),
+            Circle(
+                [1.9, 0.0], 1.0, vel=[0.0, 0.0, 0.0], fric_coeff=0.6),
+        ],
+        engine=PdipmEngine,
+        strict_no_penetration=False,
+    )
+
+    new_velocity = world.engine.solve_dynamics(world, world.dt)
+    (gradient,) = torch.autograd.grad(
+        new_velocity.square().sum(), learnable_velocity)
+
+    assert world.contacts
+    assert torch.isfinite(new_velocity).all()
+    assert torch.isfinite(gradient).all()
+    assert gradient.norm().item() > 1e-6
