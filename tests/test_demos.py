@@ -1,5 +1,7 @@
-import unittest
+import ast
 import math
+from pathlib import Path
+import unittest
 
 from lcp_physics.physics.bodies import Circle, Rect
 from lcp_physics.physics.constraints import Joint, TotalConstraint, XConstraint, YConstraint
@@ -10,6 +12,56 @@ from lcp_physics.physics.world import World, run_world
 
 TIME = 20
 DT = Defaults.DT
+
+
+def _grad_demo_tree():
+    source_path = Path(__file__).parents[1] / 'demos' / 'grad_demo.py'
+    return ast.parse(source_path.read_text())
+
+
+def test_grad_demo_uses_modern_autograd_api():
+    tree = _grad_demo_tree()
+
+    variable_imports = [
+        alias
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == 'torch.autograd'
+        for alias in node.names
+        if alias.name == 'Variable'
+    ]
+    data_attributes = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == 'data'
+    ]
+
+    assert not variable_imports
+    assert not data_attributes
+
+
+def test_grad_demo_rebuilds_all_final_playback_references():
+    tree = _grad_demo_tree()
+    grad_demo_function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == 'grad_demo'
+    )
+    make_world_assignments = [
+        node for node in ast.walk(grad_demo_function)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(descendant, ast.Call)
+            and isinstance(descendant.func, ast.Name)
+            and descendant.func.id == 'make_world'
+            for descendant in ast.walk(node.value)
+        )
+    ]
+
+    assert len(make_world_assignments) == 3
+    for assignment in make_world_assignments:
+        assert isinstance(assignment.value, ast.Call)
+        assert len(assignment.targets) == 1
+        target = assignment.targets[0]
+        assert isinstance(target, ast.Tuple)
+        assert [element.id for element in target.elts] == ['world', 'c', 'target']
 
 
 class TestDemos(unittest.TestCase):

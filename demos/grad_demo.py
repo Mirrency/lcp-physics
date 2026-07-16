@@ -4,7 +4,6 @@ import math
 import pygame
 
 import torch
-from torch.autograd import Variable
 
 from lcp_physics.physics.bodies import Circle, Rect
 from lcp_physics.physics.constraints import Joint
@@ -17,16 +16,16 @@ DT = Defaults.DT
 
 
 def grad_demo(screen):
-    initial_force = torch.DoubleTensor([0, 3, 0])
-    initial_force[2] = 0
-    initial_force = Variable(initial_force, requires_grad=True)
+    initial_force = torch.tensor(
+        [0.0, 3.0, 0.0], dtype=torch.double, requires_grad=True)
 
     # Initial demo
     learned_force = lambda t: initial_force if t < 0.1 else ExternalForce.ZEROS
     # learned_force = gravity
     world, c, target = make_world(learned_force)
     # initial_state = world.save_state()
-    # next_fric_coeff = Variable(torch.DoubleTensor([1e-7]), requires_grad=True)
+    # next_fric_coeff = torch.tensor([1e-7], dtype=torch.double,
+    #                                requires_grad=True)
     # c.fric_coeff = next_fric_coeff
     # initial_state = world.save_state()
     run_world(world, run_time=TIME, screen=screen)
@@ -48,26 +47,29 @@ def grad_demo(screen):
 
         dist = (target.pos - c.pos).norm()
         dist.backward()
-        grad = initial_force.grad.data
+        grad = initial_force.grad.detach().clone()
         # grad.clamp_(-10, 10)
-        initial_force = Variable(initial_force.data - learning_rate * grad, requires_grad=True)
-        # grad = c.fric_coeff.grad.data
+        with torch.no_grad():
+            initial_force -= learning_rate * grad
+        initial_force.grad = None
+        # grad = c.fric_coeff.grad.detach().clone()
         # grad.clamp_(-10, 10)
-        # temp = c.fric_coeff.data - learning_rate * grad
+        # temp = c.fric_coeff.detach() - learning_rate * grad
         # temp.clamp_(1e-7, 1)
         learning_rate *= 0.9
-        # next_fric_coeff = Variable(temp, requires_grad=True)
-        print(i, '/', max_iter, dist.data[0])
+        # next_fric_coeff = temp.requires_grad_()
+        dist_value = dist.item()
+        print(i, '/', max_iter, dist_value)
         print(grad)
         # print(next_fric_coeff)
         print(learned_force(0.05))
         print('=======')
-        if abs((last_dist - dist).data[0]) < 1e-5:
+        if abs(last_dist - dist_value) < 1e-5:
             break
-        last_dist = dist
-        dist_hist.append(dist)
+        last_dist = dist_value
+        dist_hist.append(dist.detach())
 
-    world = make_world(learned_force)[0]
+    world, c, target = make_world(learned_force)
     # c.fric_coeff = next_fric_coeff
     # world.load_state(initial_state)
     # world.reset_engine()
@@ -75,7 +77,7 @@ def grad_demo(screen):
     # rec = Recorder(DT, screen)
     run_world(world, run_time=TIME, screen=screen, recorder=rec)
     dist = (target.pos - c.pos).norm()
-    print(dist.data[0])
+    print(dist.item())
 
     # import pickle
     # with open('control_balls_dist_hist.pkl', 'w') as f:
