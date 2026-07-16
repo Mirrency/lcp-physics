@@ -41,8 +41,8 @@ def get_sizes(G, A=None):
 def bdiag(d):
     nBatch, sz = d.size()
     D = torch.zeros(nBatch, sz, sz).type_as(d)
-    I = torch.eye(sz).repeat(nBatch, 1, 1).type_as(d).byte()
-    D[I] = d.squeeze()
+    I = torch.eye(sz, device=d.device, dtype=torch.bool).expand(nBatch, -1, -1)
+    D[I] = d.reshape(-1)
     return D
 
 
@@ -72,7 +72,7 @@ def efficient_btriunpack(LU_data, LU_pivots, unpack_data=True, unpack_pivots=Tru
     nBatch, sz = LU_data.shape[:-1]
 
     if unpack_data:
-        I_U = torch.ones(sz, sz, device=LU_data.device, dtype=torch.uint8).triu_().expand_as(LU_data)
+        I_U = torch.ones(sz, sz, device=LU_data.device, dtype=torch.bool).triu_().expand_as(LU_data)
         zero = torch.tensor(0.).type_as(LU_data)
         U = torch.where(I_U, LU_data, zero)
         L = torch.where(I_U, zero, LU_data)
