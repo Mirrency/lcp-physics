@@ -1,6 +1,5 @@
 import math
 
-import ode
 import pygame
 
 import torch
@@ -49,11 +48,10 @@ class Body(object):
         self.fric_coeff = get_tensor(fric_coeff, base_tensor=self._base_tensor)
         self.restitution = get_tensor(restitution, base_tensor=self._base_tensor)
         self.forces = []
+        self.no_contact = set()
 
         self.col = col
         self.thickness = thickness
-
-        self._create_geom()
 
     def _set_base_tensor(self, args):
         """Check if any tensor provided and if so set as base tensor to
@@ -71,29 +69,18 @@ class Body(object):
         self._base_tensor = get_tensor(0, base_tensor=None)
         return
 
-    def _create_geom(self):
-        raise NotImplementedError
-
     def _get_ang_inertia(self, mass):
         raise NotImplementedError
 
-    def move(self, dt, update_geom_rotation=True):
+    def move(self, dt):
         new_p = self.p + self.v * dt
-        self.set_p(new_p, update_geom_rotation)
+        self.set_p(new_p)
 
-    def set_p(self, new_p, update_geom_rotation=True):
+    def set_p(self, new_p):
         self.p = new_p
         # Reset memory pointers
         self.rot = self.p[0:1]
         self.pos = self.p[1:]
-
-        self.geom.setPosition([self.pos[0], self.pos[1], 0.0])
-        if update_geom_rotation:
-            # XXX sign correction
-            s = math.sin(-self.rot.item() / 2)
-            c = math.cos(-self.rot.item() / 2)
-            quat = [s, 0, 0, c]  # Eq 2.3
-            self.geom.setQuaternion(quat)
 
     def apply_forces(self, t):
         if len(self.forces) == 0:
@@ -102,8 +89,8 @@ class Body(object):
             return sum([f.force(t) for f in self.forces])
 
     def add_no_contact(self, other):
-        self.geom.no_contact.add(other.geom)
-        other.geom.no_contact.add(self.geom)
+        self.no_contact.add(other)
+        other.no_contact.add(self)
 
     def add_force(self, f):
         self.forces.append(f)
@@ -119,23 +106,12 @@ class Circle(Body):
                  col=(255, 0, 0), thickness=1):
         self._set_base_tensor(locals().values())
         self.rad = get_tensor(rad, base_tensor=self._base_tensor)
+        self.bounding_radius = self.rad
         super().__init__(pos, vel=vel, mass=mass, restitution=restitution,
                          fric_coeff=fric_coeff, eps=eps, col=col, thickness=thickness)
 
     def _get_ang_inertia(self, mass):
         return mass * self.rad * self.rad / 2
-
-    def _create_geom(self):
-        self.geom = ode.GeomSphere(None, self.rad.item() + self.eps.item())
-        self.geom.setPosition(torch.cat([self.pos,
-                                         self.pos.new_zeros(1)]))
-        self.geom.no_contact = set()
-
-    def move(self, dt, update_geom_rotation=False):
-        super().move(dt, update_geom_rotation=update_geom_rotation)
-
-    def set_p(self, new_p, update_geom_rotation=False):
-        super().set_p(new_p, update_geom_rotation=update_geom_rotation)
 
     def draw(self, screen, pixels_per_meter=1):
         center = (self.pos.detach().numpy() * pixels_per_meter).astype(int)
@@ -169,6 +145,7 @@ class Hull(Body):
         assert len(verts) > 2 and self._is_clockwise(verts)
         centroid = self._get_centroid(verts)
         self.verts = [v - centroid for v in verts]
+        self.bounding_radius = torch.stack([v.norm() for v in self.verts]).max()
         # center position at centroid
         pos = ref_point + centroid
         # store last separating edge for SAT
@@ -188,25 +165,11 @@ class Hull(Body):
             denominator = denominator + norm_cross
         return 1 / 6 * mass * numerator / denominator
 
-    def _create_geom(self):
-        # find vertex furthest from centroid
-        max_rad = max([v.dot(v).item() for v in self.verts])
-        max_rad = math.sqrt(max_rad)
-
-        # XXX Using sphere with largest vertex ray for broadphase for now
-        self.geom = ode.GeomSphere(None, max_rad + self.eps.item())
-        self.geom.setPosition(torch.cat([self.pos,
-                                         self.pos.new_zeros(1)]))
-        self.geom.no_contact = set()
-
-    def set_p(self, new_p, update_geom_rotation=False):
+    def set_p(self, new_p):
         rot = new_p[0] - self.p[0]
         if rot.item() != 0:
             self.rotate_verts(rot)
-        super().set_p(new_p, update_geom_rotation=update_geom_rotation)
-
-    def move(self, dt, update_geom_rotation=False):
-        super().move(dt, update_geom_rotation=update_geom_rotation)
+        super().set_p(new_p)
 
     def rotate_verts(self, rot):
         rot_mat = rotation_matrix(rot)
@@ -269,24 +232,12 @@ class Rect(Hull):
     def _get_ang_inertia(self, mass):
         return mass * torch.sum(self.dims ** 2) / 12
 
-    def _create_geom(self):
-        self.geom = ode.GeomBox(None, torch.cat([self.dims + 2 * self.eps.item(),
-                                                 self.dims.new_ones(1)]))
-        self.geom.setPosition(torch.cat([self.pos, self.pos.new_zeros(1)]))
-        self.geom.no_contact = set()
-
     def rotate_verts(self, rot):
         rot_mat = rotation_matrix(rot)
         self.verts[0] = rot_mat.matmul(self.verts[0])
         self.verts[1] = rot_mat.matmul(self.verts[1])
         self.verts[2] = -self.verts[0]
         self.verts[3] = -self.verts[1]
-
-    def set_p(self, new_p, update_geom_rotation=True):
-        super().set_p(new_p, update_geom_rotation=update_geom_rotation)
-
-    def move(self, dt, update_geom_rotation=True):
-        super().move(dt, update_geom_rotation=update_geom_rotation)
 
     def draw(self, screen, pixels_per_meter=1):
         # draw diagonals

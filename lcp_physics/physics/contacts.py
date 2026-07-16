@@ -1,16 +1,9 @@
 import random
 
-import ode
-
 import torch
 
 from .bodies import Circle
-from .utils import Indices, Defaults, left_orthogonal
-
-
-X = Indices.X
-Y = Indices.Y
-DIM = Defaults.DIM
+from .utils import left_orthogonal
 
 
 class ContactHandler:
@@ -21,48 +14,16 @@ class ContactHandler:
         raise NotImplementedError
 
 
-class OdeContactHandler(ContactHandler):
-    def __call__(self, args, geom1, geom2):
-        if geom1 in geom2.no_contact:
-            return
-        world = args[0]
-        base_tensor = world.bodies[0].p
-
-        contacts = ode.collide(geom1, geom2)
-        for c in contacts:
-            point, normal, penetration, geom1, geom2 = c.getContactGeomParams()
-            # XXX Simple disambiguation of 3D repetition of contacts
-            if point[2] > 0:
-                continue
-            normal = base_tensor.new_tensor(normal[:DIM])
-            point = base_tensor.new_tensor(point)
-            penetration = base_tensor.new_tensor([penetration])
-            penetration -= 2 * world.eps
-            if penetration.item() < -2 * world.eps:
-                return
-            p1 = point - base_tensor.new_tensor(geom1.getPosition())
-            p2 = point - base_tensor.new_tensor(geom2.getPosition())
-            world.contacts.append(((normal, p1[:DIM], p2[:DIM], penetration),
-                                    geom1.body, geom2.body))
-            # world.contacts_debug = world.contacts  # XXX
-
-
 class DiffContactHandler(ContactHandler):
     """Differentiable contact handler, operations to calculate contact manifold
     are done in autograd.
     """
-    def __init__(self):
-        self.debug_callback = OdeContactHandler()
-
-    def __call__(self, args, geom1, geom2):
-        # self.debug_callback(args, geom1, geom2)
-
-        if geom1 in geom2.no_contact:
+    def __call__(self, world, body1_index, body2_index):
+        b1 = world.bodies[body1_index]
+        b2 = world.bodies[body2_index]
+        if b2 in b1.no_contact or b1 in b2.no_contact:
             return
-        world = args[0]
 
-        b1 = world.bodies[geom1.body]
-        b2 = world.bodies[geom2.body]
         is_circle_g1 = isinstance(b1, Circle)
         is_circle_g2 = isinstance(b2, Circle)
         if is_circle_g1 and is_circle_g2:
@@ -73,7 +34,10 @@ class DiffContactHandler(ContactHandler):
             penetration = r - dist
             if penetration.item() < -world.eps:
                 return
-            normal = normal / dist
+            if dist.item() == 0:
+                normal = b1.pos.new_tensor([1., 0.])
+            else:
+                normal = normal / dist
             p1 = -normal * (b1.rad - penetration / 2)
             p2 = normal * (b2.rad - penetration / 2)
             pts = [(normal, p1, p2, penetration)]
@@ -201,7 +165,7 @@ class DiffContactHandler(ContactHandler):
                         pts.append((-normal, pt1, pt2, -dist))
 
         for p in pts:
-            world.contacts.append((p, geom1.body, geom2.body))
+            world.contacts.append((p, body1_index, body2_index))
         # world.contacts_debug = world.contacts  # XXX
 
     @staticmethod

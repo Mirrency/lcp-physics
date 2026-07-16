@@ -1,7 +1,6 @@
 import time
 from functools import lru_cache
 
-import ode
 import torch
 
 from . import engines as engines_module
@@ -35,12 +34,6 @@ class World:
 
         self.bodies = bodies
         self.vec_len = len(self.bodies[0].v)
-
-        # XXX Using ODE for broadphase for now
-        self.space = ode.HashSpace()
-        for i, b in enumerate(bodies):
-            b.geom.body = i
-            self.space.add(b.geom)
 
         self.static_inverse = True
         self.num_constraints = 0
@@ -138,8 +131,18 @@ class World:
 
     def find_contacts(self):
         self.contacts = []
-        # ODE contact detection
-        self.space.collide([self], self.contact_callback)
+        for body1_index, body1 in enumerate(self.bodies):
+            for body2_index in range(body1_index + 1, len(self.bodies)):
+                body2 = self.bodies[body2_index]
+                if body2 in body1.no_contact or body1 in body2.no_contact:
+                    continue
+
+                center_distance = torch.norm(body1.pos - body2.pos)
+                candidate_distance = (
+                    body1.bounding_radius + body2.bounding_radius + self.eps
+                )
+                if (center_distance <= candidate_distance).item():
+                    self.contact_callback(self, body1_index, body2_index)
 
     def restitutions(self):
         restitutions = self._M.new_empty(len(self.contacts))

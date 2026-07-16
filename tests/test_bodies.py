@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import torch
@@ -38,6 +39,48 @@ class TestBodies(unittest.TestCase):
         c2.apply_forces(1)
         c3.set_p(c3.p.new_tensor([1, 1, 1]))
         c4.move(0.1)
+
+    def test_bodies_own_symmetric_no_contact_sets(self):
+        c1 = Circle([0, 0], 1)
+        c2 = Circle([2, 0], 1)
+
+        self.assertEqual(c1.no_contact, set())
+        self.assertEqual(c2.no_contact, set())
+
+        c1.add_no_contact(c2)
+
+        self.assertIn(c2, c1.no_contact)
+        self.assertIn(c1, c2.no_contact)
+
+    def test_circle_bounding_radius_is_a_tensor_equal_to_radius(self):
+        radius = torch.tensor(2.5, dtype=DTYPE)
+        circle = Circle([0, 0], radius)
+
+        self.assertIsInstance(circle.bounding_radius, torch.Tensor)
+        torch.testing.assert_close(circle.bounding_radius, radius)
+
+    def test_hull_and_rect_bounding_radii_cover_local_vertices(self):
+        hull = Hull([0, 0], [[3, 0], [0, 4], [0, 0]])
+        rect = Rect([0, 0], [6, 8])
+
+        for body in (hull, rect):
+            expected = torch.stack([vertex.norm() for vertex in body.verts]).max()
+            self.assertIsInstance(body.bounding_radius, torch.Tensor)
+            torch.testing.assert_close(body.bounding_radius, expected)
+
+    def test_set_p_updates_state_and_rotates_hull_vertices_by_delta(self):
+        rect = Rect([0, 0], [2, 4])
+        initial_verts = [vertex.clone() for vertex in rect.verts]
+        new_p = rect.p.new_tensor([math.pi / 2, 3, 4])
+
+        rect.set_p(new_p)
+
+        torch.testing.assert_close(rect.p, new_p)
+        torch.testing.assert_close(rect.rot, new_p[:1])
+        torch.testing.assert_close(rect.pos, new_p[1:])
+        expected_rotation = torch.tensor([[0., -1.], [1., 0.]], dtype=DTYPE)
+        for actual, initial in zip(rect.verts, initial_verts):
+            torch.testing.assert_close(actual, expected_rotation.matmul(initial))
 
     def testHull(self):
         # test_hull.py
