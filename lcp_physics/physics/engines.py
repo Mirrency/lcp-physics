@@ -5,7 +5,7 @@ Based on: M. B. Cline, Rigid body simulation with contact and constraints, 2002
 
 import torch
 
-from lcp_physics.lcp.lcp import LCPFunction
+from lcp_physics.lcp.lcp import lcp_function
 
 
 class Engine:
@@ -18,7 +18,7 @@ class PdipmEngine(Engine):
     """Engine that uses the primal dual interior point method LCP solver.
     """
     def __init__(self, max_iter=10):
-        self.lcp_solver = LCPFunction
+        self.lcp_solver = lcp_function
         self.cached_inverse = None
         self.max_iter = max_iter
 
