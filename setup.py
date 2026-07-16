@@ -15,5 +15,8 @@ setup(
         'numpy==1.26.4',
         'pygame==2.6.1',
     ],
-    extras_require={'test': ['pytest==8.4.1']},
+    extras_require={
+        'test': ['pytest==8.4.1'],
+        'demo': ['matplotlib==3.11.0'],
+    },
 )

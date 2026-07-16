@@ -24,6 +24,7 @@ The core package and standard demos are tested on CPU with:
 - PyTorch 2.7.1 (CPU build)
 - NumPy 1.26.4
 - pygame 2.6.1
+- Matplotlib 3.11.0 (optional plotting dependency for demos)
 
 The production package targets Python 3.11. The legacy development solver at
 `lcp_physics/lcp/solvers/dev_pdipm.py` is not part of the verified compatibility
@@ -39,7 +40,8 @@ mode:
 conda activate lcp_physics
 python -m pip install torch==2.7.1 \
   --index-url https://download.pytorch.org/whl/cpu
-python -m pip install numpy==1.26.4 pygame==2.6.1 pytest==8.4.1
+python -m pip install numpy==1.26.4 pygame==2.6.1 pytest==8.4.1 \
+  matplotlib==3.11.0
 python -m pip install -e . --no-deps
 ```
 
@@ -52,7 +54,10 @@ conda create -n lcp_physics python=3.11 -y
 
 The editable install makes source edits in this checkout immediately available
 to Python. `--no-deps` keeps the explicitly installed CPU PyTorch build instead
-of resolving a different wheel through project metadata.
+of resolving a different wheel through project metadata. Matplotlib is optional
+for the core engine and is needed by plotting demos such as `grad_demo.py`; its
+package metadata counterpart is the pinned `[demo]` extra. The explicit install
+above avoids asking an editable extra install to resolve PyTorch again.
 
 ## Tests
 

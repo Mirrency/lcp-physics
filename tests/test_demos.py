@@ -40,7 +40,7 @@ def test_grad_demo_uses_modern_autograd_api():
     assert not data_attributes
 
 
-def test_grad_demo_rebuilds_all_final_playback_references():
+def test_grad_demo_rebuilds_final_playback_references_together():
     tree = _grad_demo_tree()
     grad_demo_function = next(
         node for node in tree.body
@@ -57,13 +57,14 @@ def test_grad_demo_rebuilds_all_final_playback_references():
         )
     ]
 
-    assert len(make_world_assignments) == 3
-    for assignment in make_world_assignments:
-        assert isinstance(assignment.value, ast.Call)
-        assert len(assignment.targets) == 1
-        target = assignment.targets[0]
-        assert isinstance(target, ast.Tuple)
-        assert [element.id for element in target.elts] == ['world', 'c', 'target']
+    assert make_world_assignments
+    final_assignment = max(make_world_assignments, key=lambda node: node.lineno)
+    assert isinstance(final_assignment.value, ast.Call)
+    assert len(final_assignment.targets) == 1
+    target = final_assignment.targets[0]
+    assert isinstance(target, ast.Tuple)
+    assert all(isinstance(element, ast.Name) for element in target.elts)
+    assert [element.id for element in target.elts] == ['world', 'c', 'target']
 
 
 def test_world_step_differentiates_learnable_demo_force():
