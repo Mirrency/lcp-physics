@@ -3,6 +3,8 @@ import math
 from pathlib import Path
 import unittest
 
+import torch
+
 from lcp_physics.physics.bodies import Circle, Rect
 from lcp_physics.physics.constraints import Joint, TotalConstraint, XConstraint, YConstraint
 from lcp_physics.physics.forces import ExternalForce, down_force, vert_impulse, hor_impulse
@@ -62,6 +64,31 @@ def test_grad_demo_rebuilds_all_final_playback_references():
         target = assignment.targets[0]
         assert isinstance(target, ast.Tuple)
         assert [element.id for element in target.elts] == ['world', 'c', 'target']
+
+
+def test_world_step_differentiates_learnable_demo_force():
+    # ExternalForce uses [torque, Fx, Fy] ordering.
+    learnable_force = torch.tensor(
+        [0.0, 3.0, -2.0], dtype=torch.double, requires_grad=True)
+
+    controlled = Circle([0.0, 0.0], 0.5)
+    target = Circle([4.0, 3.0], 0.5)
+
+    def force_until_point_one_seconds(t):
+        return learnable_force if t < 0.1 else ExternalForce.ZEROS
+
+    controlled.add_force(ExternalForce(
+        force_until_point_one_seconds, multiplier=1.0))
+    world = World([controlled, target], [], dt=DT)
+    assert not world.contacts
+
+    world.step()
+    final_distance = (target.pos - controlled.pos).norm()
+    (gradient,) = torch.autograd.grad(final_distance, learnable_force)
+
+    assert gradient.shape == learnable_force.shape
+    assert torch.isfinite(gradient).all()
+    assert gradient[1:].norm().item() > 1e-6
 
 
 class TestDemos(unittest.TestCase):
