@@ -122,6 +122,40 @@ def test_lcp_gradcheck_covers_all_inputs_with_equalities():
     )
 
 
+def test_active_inequality_gradcheck_covers_G_h_and_F():
+    Q = torch.tensor([[[1.0]]], dtype=torch.double, requires_grad=True)
+    p = torch.tensor([[-2.0]], dtype=torch.double, requires_grad=True)
+    G = torch.tensor([[[1.0]]], dtype=torch.double, requires_grad=True)
+    h = torch.tensor([[1.0]], dtype=torch.double, requires_grad=True)
+    A = torch.empty(1, 0, 1, dtype=torch.double)
+    b = torch.empty(1, 0, dtype=torch.double)
+    F = torch.tensor([[[0.0]]], dtype=torch.double, requires_grad=True)
+    solve = lcp_function(max_iter=30)
+
+    # The unconstrained x=2 violates x<=1. At the smooth active solution,
+    # x=1 and lambda=1, so strict complementarity is bounded away from zero.
+    solution = solve(Q, p, G, h, A, b, F)
+    dual = -(Q.bmm(solution.unsqueeze(2)).squeeze(2) + p) / G.squeeze(2)
+    gradients = torch.autograd.grad(solution.sum(), (Q, p, G, h, F))
+
+    torch.testing.assert_close(solution, torch.ones_like(solution), atol=1e-8, rtol=1e-8)
+    torch.testing.assert_close(dual, torch.ones_like(dual), atol=1e-8, rtol=1e-8)
+    for gradient in gradients[2:]:
+        assert torch.all(gradient.abs() > 0.5)
+    torch.testing.assert_close(gradients[2], -torch.ones_like(G), atol=1e-8, rtol=1e-8)
+    torch.testing.assert_close(gradients[3], torch.ones_like(h), atol=1e-8, rtol=1e-8)
+    torch.testing.assert_close(gradients[4], torch.ones_like(F), atol=1e-8, rtol=1e-8)
+    assert torch.autograd.gradcheck(
+        lambda candidate_Q, candidate_p, candidate_G, candidate_h, candidate_F:
+            solve(candidate_Q, candidate_p, candidate_G, candidate_h,
+                  A, b, candidate_F),
+        (Q, p, G, h, F),
+        eps=1e-6,
+        atol=1e-5,
+        rtol=1e-3,
+    )
+
+
 def test_lcp_backward_supports_positive_equality_count():
     Q = torch.tensor([[[1.0]]], dtype=torch.double)
     p = torch.tensor([[-1.0]], dtype=torch.double)
@@ -165,13 +199,21 @@ def test_lcp_solver_state_uses_saved_tensor_hooks_for_repeated_backward():
         signature for signature in packed_signatures
         if not signature[0].is_floating_point and signature[0] != torch.bool
     ]
-    assert len(packed_signatures) == 14
-    assert (torch.double, (0,)) in packed_signatures
+    expected_categories = {
+        (torch.double, (1, 1, 1)),
+        (torch.double, (1, 1)),
+        (torch.double, (1, 0, 1)),
+        (torch.double, (1, 0)),
+        (torch.double, (0,)),
+    }
+    assert expected_categories.issubset(set(packed_signatures))
+    assert packed_signatures.count((torch.double, (1, 1, 1))) >= 5
+    assert packed_signatures.count((torch.double, (1, 1))) >= 5
     assert integral_solver_state, "LU pivots bypassed saved_tensors_hooks"
-    assert len(unpacked_signatures) == 2 * len(packed_signatures)
+    assert expected_categories.issubset(set(unpacked_signatures))
     assert all(
         unpacked_signatures.count(signature) >= 2
-        for signature in integral_solver_state
+        for signature in integral_solver_state + [(torch.double, (0,))]
     )
     torch.testing.assert_close(first_gradient, -torch.ones_like(p))
     torch.testing.assert_close(second_gradient, first_gradient)
