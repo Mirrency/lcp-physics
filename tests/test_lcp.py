@@ -17,6 +17,37 @@ def _one_variable_problem(*, p_requires_grad=False):
     return Q, p, G, h, A, b, F
 
 
+def _strictly_interior_problem(*, with_equality):
+    Q = torch.tensor(
+        [[[2.0, 0.3], [0.3, 1.5]]],
+        dtype=torch.double,
+        requires_grad=True,
+    )
+    p = torch.tensor([[-1.0, -0.5]], dtype=torch.double, requires_grad=True)
+    G = torch.tensor(
+        [[[-1.0, 0.0], [0.0, -1.0], [0.4, 0.6]]],
+        dtype=torch.double,
+        requires_grad=True,
+    )
+    h = torch.tensor([[0.0, 0.0, 1.2]], dtype=torch.double, requires_grad=True)
+    F = torch.tensor(
+        [[[0.2, 0.01, 0.0], [0.01, 0.3, 0.02], [0.0, 0.02, 0.25]]],
+        dtype=torch.double,
+        requires_grad=True,
+    )
+    if with_equality:
+        A = torch.tensor([[[1.0, 1.0]]], dtype=torch.double, requires_grad=True)
+        b = torch.tensor([[0.8]], dtype=torch.double, requires_grad=True)
+    else:
+        A = torch.empty(1, 0, 2, dtype=torch.double)
+        b = torch.empty(1, 0, dtype=torch.double)
+    return Q, p, G, h, A, b, F
+
+
+def _symmetrize(Q):
+    return 0.5 * (Q + Q.transpose(1, 2))
+
+
 def test_one_variable_convex_lcp_has_finite_expected_solution():
     problem = _one_variable_problem()
 
@@ -49,6 +80,48 @@ def test_one_variable_lcp_backward_matches_known_p_gradient():
     torch.testing.assert_close(gradient, -torch.ones_like(p), atol=1e-8, rtol=1e-8)
 
 
+def test_lcp_gradcheck_covers_all_inputs_without_equalities():
+    Q, p, G, h, A, b, F = _strictly_interior_problem(with_equality=False)
+    solve = lcp_function(max_iter=30)
+
+    # The unconstrained optimum has x > 0 and Gx < h with finite margins, so
+    # gradcheck perturbations remain on one smooth, strictly inactive branch.
+    solution = solve(_symmetrize(Q), p, G, h, A, b, F)
+    slack = h - G.bmm(solution.unsqueeze(2)).squeeze(2)
+    assert torch.all(slack > 0.1)
+    assert torch.autograd.gradcheck(
+        lambda candidate_Q, candidate_p, candidate_G, candidate_h, candidate_F:
+            solve(_symmetrize(candidate_Q), candidate_p, candidate_G,
+                  candidate_h, A, b, candidate_F),
+        (Q, p, G, h, F),
+        eps=1e-6,
+        atol=1e-5,
+        rtol=1e-3,
+    )
+
+
+def test_lcp_gradcheck_covers_all_inputs_with_equalities():
+    problem = _strictly_interior_problem(with_equality=True)
+    solve = lcp_function(max_iter=30)
+
+    # A has full row rank, and its constrained optimum also has strict slack
+    # in every inequality, avoiding complementarity active-set kinks.
+    Q, p, G, h, A, b, F = problem
+    solution = solve(_symmetrize(Q), p, G, h, A, b, F)
+    slack = h - G.bmm(solution.unsqueeze(2)).squeeze(2)
+    assert torch.all(slack > 0.1)
+    assert torch.autograd.gradcheck(
+        lambda candidate_Q, candidate_p, candidate_G, candidate_h,
+               candidate_A, candidate_b, candidate_F:
+            solve(_symmetrize(candidate_Q), candidate_p, candidate_G,
+                  candidate_h, candidate_A, candidate_b, candidate_F),
+        problem,
+        eps=1e-6,
+        atol=1e-5,
+        rtol=1e-3,
+    )
+
+
 def test_lcp_backward_supports_positive_equality_count():
     Q = torch.tensor([[[1.0]]], dtype=torch.double)
     p = torch.tensor([[-1.0]], dtype=torch.double)
@@ -63,6 +136,45 @@ def test_lcp_backward_supports_positive_equality_count():
 
     torch.testing.assert_close(solution, b, atol=1e-8, rtol=1e-8)
     torch.testing.assert_close(gradient, torch.ones_like(b), atol=1e-8, rtol=1e-8)
+
+
+def test_lcp_solver_state_uses_saved_tensor_hooks_for_repeated_backward():
+    problem = _one_variable_problem(p_requires_grad=True)
+    p = problem[1]
+    packed_signatures = []
+    unpacked_signatures = []
+
+    def pack_hook(tensor):
+        signature = (tensor.dtype, tuple(tensor.shape))
+        packed_signatures.append(signature)
+        return signature, tensor.detach().clone()
+
+    def unpack_hook(packed):
+        signature, tensor = packed
+        unpacked_signatures.append(signature)
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack_hook, unpack_hook):
+        solution = lcp_function(max_iter=20)(*problem)
+
+    first_gradient = torch.autograd.grad(
+        solution.sum(), p, retain_graph=True)[0]
+    second_gradient = torch.autograd.grad(solution.sum(), p)[0]
+
+    integral_solver_state = [
+        signature for signature in packed_signatures
+        if not signature[0].is_floating_point and signature[0] != torch.bool
+    ]
+    assert len(packed_signatures) == 14
+    assert (torch.double, (0,)) in packed_signatures
+    assert integral_solver_state, "LU pivots bypassed saved_tensors_hooks"
+    assert len(unpacked_signatures) == 2 * len(packed_signatures)
+    assert all(
+        unpacked_signatures.count(signature) >= 2
+        for signature in integral_solver_state
+    )
+    torch.testing.assert_close(first_gradient, -torch.ones_like(p))
+    torch.testing.assert_close(second_gradient, first_gradient)
 
 
 def test_pdipm_engine_solves_world_contact_scene():

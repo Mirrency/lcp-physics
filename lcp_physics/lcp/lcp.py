@@ -13,43 +13,50 @@ class LCPFunction(Function):
     @staticmethod
     def forward(ctx, Q, p, G, h, A, b, F, eps, verbose,
                 not_improved_lim, max_iter):
-        _, nineq, nz = G.size()
+        _, nineq, _ = G.size()
         neq = A.size(1) if A.ndimension() > 1 else 0
         assert(neq > 0 or nineq > 0)
-        ctx.neq, ctx.nineq, ctx.nz = neq, nineq, nz
+        ctx.neq, ctx.nineq = neq, nineq
 
-        ctx.Q_LU, ctx.S_LU, ctx.R = pdipm.pre_factor_kkt(Q, G, F, A)
-        zhats, ctx.nus, ctx.lams, ctx.slacks = pdipm.forward(
-            Q, p, G, h, A, b, F, ctx.Q_LU, ctx.S_LU, ctx.R,
+        Q_LU, S_LU, R = pdipm.pre_factor_kkt(Q, G, F, A)
+        zhats, nus, lams, slacks = pdipm.forward(
+            Q, p, G, h, A, b, F, Q_LU, S_LU, R,
             eps=eps, max_iter=max_iter, verbose=verbose,
             not_improved_lim=not_improved_lim)
 
-        ctx.save_for_backward(zhats, Q, p, G, h, A, b, F)
+        saved_nus = nus if nus is not None else Q.new_empty(0)
+        ctx.save_for_backward(
+            zhats, Q, p, G, h, A, b, F,
+            Q_LU[0], Q_LU[1], R, lams, slacks, saved_nus)
         return zhats
 
     @staticmethod
     def backward(ctx, dl_dzhat):
-        zhats, Q, p, G, h, A, b, F = ctx.saved_tensors
+        (zhats, Q, p, G, h, A, b, F,
+         Q_LU_data, Q_LU_pivots, R, lams, slacks,
+         saved_nus) = ctx.saved_tensors
         batch_size = extract_batch_size(Q, p, G, h, A, b)
 
-        neq, nineq, nz = ctx.neq, ctx.nineq, ctx.nz
+        neq, nineq = ctx.neq, ctx.nineq
+        Q_LU = (Q_LU_data, Q_LU_pivots)
+        S_LU = [None, None]
+        nus = saved_nus if neq > 0 else None
 
-        # D = torch.diag((ctx.lams / ctx.slacks).squeeze(0)).unsqueeze(0)
-        d = ctx.lams / ctx.slacks
+        d = lams / slacks
 
-        pdipm.factor_kkt(ctx.S_LU, ctx.R, d)
+        pdipm.factor_kkt(S_LU, R, d)
         dx, _, dlam, dnu = pdipm.solve_kkt(
-            ctx.Q_LU, d, G, A, ctx.S_LU,
+            Q_LU, d, G, A, S_LU,
             dl_dzhat, G.new_zeros(batch_size, nineq),
             G.new_zeros(batch_size, nineq),
             G.new_zeros(batch_size, neq))
 
         dps = dx
-        dGs = bger(dlam, zhats) + bger(ctx.lams, dx)
-        dFs = -bger(dlam, ctx.lams)
+        dGs = bger(dlam, zhats) + bger(lams, dx)
+        dFs = -bger(dlam, lams)
         dhs = -dlam
         if neq > 0:
-            dAs = bger(dnu, zhats) + bger(ctx.nus, dx)
+            dAs = bger(dnu, zhats) + bger(nus, dx)
             dbs = -dnu
         else:
             dAs, dbs = None, None
